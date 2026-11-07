@@ -6,10 +6,9 @@ Keep this path green before building a frontend.
 
 | PDF | document_ref | year | make | model |
 | --- | --- | --- | --- | --- |
-| `intake_manifold_guide.pdf.pdf` | `intake_manifold_guide` | 2019 | chevrolet | silverado |
-| `AMS Performance VR30 Guide.pdf` | `ams_performance_vr30_guide` | 2016 | nissan | vr30 |
+| `subaru_wrx_2022_service_manual.pdf` | `subaru_wrx_2022_service_manual` | 2022 | subaru | wrx |
 
-The PDFs are local-only inputs and are not tracked in Git. Confirm that the files exist and that the Qdrant `george_specs` collection contains points before starting the API. The configured cloud database is currently empty until these manuals are ingested.
+The demo vehicle is a 2022 Subaru WRX. The PDF is a local-only input and is not tracked in Git. Confirm that the file exists and that the Qdrant `george_specs` collection contains points before starting the API. If the database still holds the earlier Silverado/VR30 demo manuals, run `purge_db.py` first (it empties the whole `george_specs` collection), then ingest the WRX manual, so old manuals can't answer WRX questions.
 
 Parse Markdown is cached in `.george_parse_cache/` (gitignored). Re-ingest does **not** call LlamaParse unless you pass `--force-parse`.
 
@@ -67,11 +66,11 @@ This is **not** **Encryption Settings**.
 | Param | Required? | Notes |
 | --- | --- | --- |
 | `query` | **Yes** | What they’re asking |
-| `make` | No | e.g. chevrolet / nissan |
-| `model` | No | e.g. silverado / vr30 |
+| `make` | No | e.g. subaru |
+| `model` | No | e.g. wrx |
 | `year` | **No** | Uncheck required in Vapi |
 
-If the tech says “AMS VR30”, the API infers `nissan` / `vr30` / `2016`. If they say “2019 Silverado”, it infers Chevy tags.
+If the tech says “WRX” (or speech-to-text hears “W R X”), the API infers `subaru` / `wrx` / `2022` from the uploaded catalog. “Subie” is read as `subaru`.
 
 ### Paste into Assistant **System Prompt**
 
@@ -89,8 +88,8 @@ WHEN TO CALL lookup_spec
 HOW TO CALL lookup_spec
 - query: the mechanic's request in their words (required).
 - make / model / year: only if the mechanic clearly stated them. All are optional.
-- Do NOT interrogate for year if they already named the platform (Silverado, Chevy, Chevrolet, AMS, VR30, Q50, Q60, Infiniti, Nissan VR30, etc.).
-- If speech-to-text looks like BR30 / DR30 / V R 30 / AMS-BR30, treat it as VR30 / AMS VR30 and still call the tool. Prefer spelling VR30 in your spoken reply only if you must name the engine yourself; otherwise read the tool result as-is.
+- Do NOT interrogate for year if they already named the platform (WRX, Subaru WRX, Subie, etc.).
+- If speech-to-text looks like W R X / W.R.X., treat it as WRX and still call the tool. Otherwise read the tool result as-is.
 - Never skip the tool because a similar question was asked earlier.
 
 AFTER THE TOOL RETURNS (CRITICAL — VERBATIM MODE)
@@ -100,26 +99,26 @@ AFTER THE TOOL RETURNS (CRITICAL — VERBATIM MODE)
 - Do not add greetings, emojis, "sure", "absolutely", or extra shop chatter.
 - Do not merge this answer with a previous answer.
 - Do not reuse numbers, cautions, or sentences from earlier tool results.
-- Do not substitute a Chevy/Silverado answer for an AMS/VR30 answer or vice versa.
+- Do not substitute the answer for one fastener or component for another.
 - If the tool returns an error string: say that you do not have that spec in the manuals, briefly. Only then ask for year/make/model if the vehicle is still unknown.
 
 CONVERSATION STYLE
 - Voice-first: 1–2 short sentences max, matching the tool string.
 - Confirm the working vehicle only if it helps; do not block the lookup.
 - If the mechanic is clearly chatting (not asking a spec), reply briefly without calling the tool.
-- Never invent Fel-Pro numbers, torque values, sequences, or warnings.
+- Never invent part numbers, torque values, sequences, or warnings.
 
 FAILURE MODES YOU MUST AVOID
 - Saying "15-18 ft" instead of "15-18 foot-pounds".
 - Saying "15 N·m or 11 ft" instead of "15 newton-meters or 11 foot-pounds".
-- Answering AMS lower-intake with the Silverado intake-bolt reply.
+- Answering one fastener question with the reply for a different fastener.
 - Using an earlier result after a new lookup_spec completed.
 ```
 
 ### Tool description (paste on the tool)
 
 ```text
-Looks up torque and fastener specs from shop manuals. ALWAYS call for every new torque/spec question in a call. Pass query always. make, model, and year are optional — omit year when the platform is clear (VR30/AMS/BR30/DR30 mishears → Nissan VR30; Silverado → Chevrolet). The API returns a ready-to-speak result string. The assistant MUST speak that result EXACTLY with no paraphrasing, no unit abbreviations, and no reuse of prior-turn answers. Never invent values.
+Looks up torque and fastener specs from shop manuals. ALWAYS call for every new torque/spec question in a call. Pass query always. make, model, and year are optional — omit year when the platform is clear (WRX / W R X mishears → Subaru WRX; Subie → Subaru). The API returns a ready-to-speak result string. The assistant MUST speak that result EXACTLY with no paraphrasing, no unit abbreviations, and no reuse of prior-turn answers. Never invent values.
 ```
 
 ## Re-seed (credit-safe)
@@ -127,22 +126,20 @@ Looks up torque and fastener specs from shop manuals. ALWAYS call for every new 
 ```bash
 cd /Users/raghav.s18/Documents/Projects/HackUTD26/backend
 
-../.venv/bin/python ingest.py "intake_manifold_guide.pdf.pdf" \
-  --year 2019 --make chevrolet --model silverado
-
-../.venv/bin/python ingest.py "AMS Performance VR30 Guide.pdf" \
-  --year 2016 --make nissan --model vr30
+../.venv/bin/python ingest.py "subaru_wrx_2022_service_manual.pdf" \
+  --year 2022 --make subaru --model wrx
 ```
 
 After ingest, restart uvicorn.
 
 ## Smoke questions
 
-1. “Intake manifold bolt torque for a 2019 Silverado?”
-2. “Fel-Pro gasket for application 226042?”
-3. “Lower intake manifold torque on the AMS VR30 guide?”
-4. “Fuel nut torque for AMS VR30?”
-5. “Upper intake manifold torque for Nissan VR30?”
+Swap these for questions the ingested WRX manual actually covers; anything it doesn't cover should be refused.
+
+1. “Oil drain plug torque for a 2022 WRX?”
+2. “Spark plug torque on the 2022 Subaru WRX?”
+3. “Wheel lug nut torque on the WRX?”
+4. “Ford F-150 head bolt torque?” (should be refused — no matching manual)
 
 ## Curl
 
@@ -151,7 +148,7 @@ After ingest, restart uvicorn.
 curl -s -X POST "http://127.0.0.1:8000/vapi-tool" \
   -H "Content-Type: application/json" \
   -H "x-vapi-secret: YOUR_SECRET_HERE" \
-  -d '{"query":"lower intake manifold torque AMS VR30"}'
+  -d '{"query":"oil drain plug torque 2022 Subaru WRX"}'
 ```
 
 Run the API from `backend/` so `.env` and local paths resolve correctly.

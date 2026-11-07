@@ -28,16 +28,16 @@ from qdrant_client.http import models as qmodels
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-DEFAULT_PDF_PATH = PROJECT_ROOT / "intake_manifold_guide.pdf.pdf"
+DEFAULT_PDF_PATH = PROJECT_ROOT / "subaru_wrx_2022_service_manual.pdf"
 QDRANT_PATH = PROJECT_ROOT / "george_mvp_db"
 PARSE_CACHE_DIR = PROJECT_ROOT / ".george_parse_cache"
 COLLECTION_NAME = "george_specs"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 VECTOR_SIZE = 384
 
-DEFAULT_YEAR = "2019"
-DEFAULT_MAKE = "chevrolet"
-DEFAULT_MODEL = "silverado"
+DEFAULT_YEAR = "2022"
+DEFAULT_MAKE = "subaru"
+DEFAULT_MODEL = "wrx"
 DEFAULT_SHOP_ID = "shop_demo"
 
 # Longer / period-spaced patterns first so partial matches cannot corrupt text.

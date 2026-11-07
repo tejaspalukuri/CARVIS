@@ -40,15 +40,10 @@ Caution: Serious damage can occur when ignition is not installed correctly.
 """
 
 _DEMO_CATALOG = ShopVehicleCatalog(
-    makes=frozenset({"chevrolet", "nissan"}),
-    models=frozenset({"silverado", "vr30"}),
-    years=frozenset({"2019", "2016"}),
-    triples=frozenset(
-        {
-            ("2019", "chevrolet", "silverado"),
-            ("2016", "nissan", "vr30"),
-        }
-    ),
+    makes=frozenset({"subaru"}),
+    models=frozenset({"wrx"}),
+    years=frozenset({"2022"}),
+    triples=frozenset({("2022", "subaru", "wrx")}),
 )
 
 
@@ -63,8 +58,14 @@ def test_part_number_12_13_speech_spaced() -> None:
 
 
 def test_query_normalizer_collapses_digit_gaps() -> None:
-    assert query_normalizer("20. 19") == "2019"
-    assert "2019" in query_normalizer("20. 19 Silverado")
+    assert query_normalizer("20. 22") == "2022"
+    assert "2022" in query_normalizer("20. 22 WRX")
+
+
+def test_query_normalizer_repairs_wrx_mishears() -> None:
+    assert query_normalizer("W R X oil drain plug") == "wrx oil drain plug"
+    assert query_normalizer("w.r.x. spark plugs") == "wrx. spark plugs"
+    assert query_normalizer("my subie") == "my subaru"
 
 
 def test_format_voice_answer_suppresses_caution_on_torque_query() -> None:
@@ -88,20 +89,20 @@ def test_format_voice_answer_includes_caution_when_asked() -> None:
 
 def test_infer_from_uploaded_catalog_only() -> None:
     make, model, year = _infer_vehicle_fields(
-        "lower intake AMS VR30", "", "", "", _DEMO_CATALOG
+        "wrx drain plug torque", "", "", "", _DEMO_CATALOG
     )
-    assert make == "nissan"
-    assert model == "vr30"
-    assert year == "2016"
+    assert make == "subaru"
+    assert model == "wrx"
+    assert year == "2022"
 
     make, model, year = _infer_vehicle_fields(
-        "2019 Silverado intake bolts", "", "", "", _DEMO_CATALOG
+        "2022 subaru wrx spark plugs", "", "", "", _DEMO_CATALOG
     )
-    assert make == "chevrolet"
-    assert model == "silverado"
-    assert year == "2019"
+    assert make == "subaru"
+    assert model == "wrx"
+    assert year == "2022"
 
-    # Unknown platforms must not invent Chevy/Nissan tags.
+    # Unknown platforms must not invent Subaru tags.
     make, model, year = _infer_vehicle_fields(
         "Ford F-150 specs", "", "", "", _DEMO_CATALOG
     )
@@ -112,9 +113,9 @@ def test_infer_from_uploaded_catalog_only() -> None:
 
 def test_vehicle_fields_must_exist_in_catalog() -> None:
     assert _vehicle_fields_in_catalog(
-        _DEMO_CATALOG, "2019", "chevrolet", "silverado"
+        _DEMO_CATALOG, "2022", "subaru", "wrx"
     )
     assert not _vehicle_fields_in_catalog(_DEMO_CATALOG, "", "ford", "f150")
     assert not _vehicle_fields_in_catalog(
-        _DEMO_CATALOG, "2019", "ford", "silverado"
+        _DEMO_CATALOG, "2022", "ford", "wrx"
     )

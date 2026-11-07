@@ -20,9 +20,9 @@ const API_BASE = (import.meta.env.VITE_GEORGE_API_URL || "/api").replace(/\/$/, 
 function App() {
   const [photo, setPhoto] = useState<File | null>(null);
   const [question, setQuestion] = useState("What is the torque specification for this component?");
-  const [year, setYear] = useState("2019");
-  const [make, setMake] = useState("chevrolet");
-  const [model, setModel] = useState("silverado");
+  const [year, setYear] = useState("2022");
+  const [make, setMake] = useState("subaru");
+  const [model, setModel] = useState("wrx");
   const [result, setResult] = useState<VisionResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

@@ -9,8 +9,8 @@ George is an autonomous, hands-free, low-latency voice-first AI assistant built 
 ## 🎭 USER EXPERIENCE FLOW (POV)
 1. **Initiation**: The mechanic launches a minimalist interface on a web/mobile browser and selects their active service bay.
 2. **Connection**: The browser establishes a bidirectional WebRTC audio link. The interface displays a responsive, pulsating, Siri-style circular canvas indicating an active listener loop.
-3. **Query**: The technician, actively working under-hood, speaks naturally: *"George, what's the intake manifold torque spec for a 2019 Silverado?"*
-4. **Delivery**: Within 500-800ms, George suppresses background noise, interrupts the environment, and delivers a precise audio response directly to the technician's headset: *"The final pass specification is 106 inch-pounds. Follow a cross-tightening sequence."*
+3. **Query**: The technician, actively working under-hood, speaks naturally: *"George, what's the oil drain plug torque for a 2022 WRX?"*
+4. **Delivery**: Within 500-800ms, George suppresses background noise, interrupts the environment, and delivers a precise audio response directly to the technician's headset: the exact value read from the matching 2022 Subaru WRX service manual — never a value from memory.
 
 ---
 

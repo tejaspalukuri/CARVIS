@@ -53,8 +53,9 @@ COLLECTION_NAME = "george_specs"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 DEFAULT_SHOP_ID = "shop_demo"
 # Cosine similarity floor for shop-scoped semantic fallback (Pass 3).
-# Tuned so in-corpus AMS/Chevy hits (~0.71–0.75) pass and unrelated
-# vehicles (Ford/Honda ~0.63–0.66) refuse → SPEC_NOT_FOUND.
+# Tuned on the earlier demo corpus so in-corpus hits (~0.71–0.75) passed and
+# unrelated vehicles (~0.63–0.66) refused → SPEC_NOT_FOUND. Re-check these
+# floors after the 2022 Subaru WRX manual is ingested.
 MIN_SEMANTIC_SCORE = 0.68
 # Soft vehicle match (Pass 2) may score a bit lower; still refuse junk.
 MIN_FILTERED_SCORE = 0.60
@@ -80,14 +81,11 @@ _PART_NUMBER_DOT_RE = re.compile(r"(?<=\d{2})\.(?=\d{2})")
 _PART_NUMBER_RUN_RE = re.compile(r"\d{4,}")
 _YEAR_LIKE_RE = re.compile(r"^(?:19|20|21)\d{2}$")
 _VEHICLE_TYPO_RULES: Sequence[tuple[re.Pattern[str], str]] = (
-    (re.compile(r"\bbr[\s\-]?30\b", re.IGNORECASE), "vr30"),
-    (re.compile(r"\bdr[\s\-]?30\b", re.IGNORECASE), "vr30"),
-    (re.compile(r"\bv[\s\.\-]*r[\s\.\-]*30\b", re.IGNORECASE), "vr30"),
+    (re.compile(r"\bw[\s\.\-]*r[\s\.\-]*x\b", re.IGNORECASE), "wrx"),
     (re.compile(r"\bfuel[\s\-]?pro\b", re.IGNORECASE), "fel-pro"),
     (re.compile(r"\bfell[\s\-]?pro\b", re.IGNORECASE), "fel-pro"),
     (re.compile(r"\bfelpro\b", re.IGNORECASE), "fel-pro"),
-    (re.compile(r"\bchevy\b", re.IGNORECASE), "chevrolet"),
-    (re.compile(r"\bsilverad[ao]\b", re.IGNORECASE), "silverado"),
+    (re.compile(r"\bsubie\b", re.IGNORECASE), "subaru"),
 )
 
 _CAUTION_QUERY_HINTS = (
@@ -825,7 +823,7 @@ def _search_top_chunk_sync(
 
     ``shop_id`` is a mandatory must-filter on every pass so tenants cannot
     retrieve each other's manuals. Pass 3 (and soft Pass 2) refuse low-score
-    nearest neighbors so unknown vehicles do not inherit AMS/Chevy leftovers.
+    nearest neighbors so unknown vehicles do not inherit other vehicles' leftovers.
     Sync — call via ``search_top_chunk`` so FastAPI never blocks the event loop.
     """
     tenant = (shop_id or DEFAULT_SHOP_ID).strip().lower() or DEFAULT_SHOP_ID
@@ -1645,14 +1643,6 @@ def _infer_vehicle_fields(
             if candidate and candidate in q:
                 make_out = candidate
                 break
-
-    # Spelling aliases — only if the canonical tag exists in this shop's brain.
-    if not make_out and "chevy" in q and "chevrolet" in catalog.makes:
-        make_out = "chevrolet"
-    if not model_out and "ams" in q and "vr30" in catalog.models:
-        model_out = "vr30"
-    if not make_out and model_out == "vr30" and "nissan" in catalog.makes:
-        make_out = "nissan"
 
     if not year_out:
         for candidate in sorted(catalog.years, key=len, reverse=True):

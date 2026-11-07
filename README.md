@@ -92,22 +92,20 @@ PDF
 
 | PDF | Tags |
 | --- | --- |
-| `intake_manifold_guide.pdf.pdf` | 2019 · chevrolet · silverado |
-| `AMS Performance VR30 Guide.pdf` | 2016 · nissan · vr30 |
+| `subaru_wrx_2022_service_manual.pdf` | 2022 · subaru · wrx |
 
-These PDFs are local-only inputs and are not currently present in the repository. Qdrant must contain at least one correctly tagged manual before the API can start answering.
+The demo vehicle is a 2022 Subaru WRX. The PDF is a local-only input and is not present in the repository; rename your copy to match or pass its real filename. Qdrant must contain at least one correctly tagged manual before the API can start answering.
 
 ```bash
 cd backend
-../.venv/bin/python ingest.py "intake_manifold_guide.pdf.pdf" --year 2019 --make chevrolet --model silverado
-../.venv/bin/python ingest.py "AMS Performance VR30 Guide.pdf" --year 2016 --make nissan --model vr30
+../.venv/bin/python ingest.py "subaru_wrx_2022_service_manual.pdf" --year 2022 --make subaru --model wrx
 # PDF changed? add --force-parse   | hard scan? add --premium
 ```
 
 ## Phase 2 — Live voice (use the brain)
 
 ```text
-"What's the lower intake torque on a VR30?"
+"What's the oil drain plug torque on a 2022 WRX?"
                 │
                 ▼
          Vapi STT + LLM
@@ -208,7 +206,7 @@ The live webhook is [`backend/main.py`](backend/main.py). Ingest stays on your l
    curl -s -X POST https://YOUR-SERVICE.onrender.com/vapi-tool \
      -H "Content-Type: application/json" \
      -H "x-vapi-secret: YOUR_SECRET" \
-     -d '{"query":"lower intake manifold torque AMS VR30"}'
+     -d '{"query":"oil drain plug torque 2022 Subaru WRX"}'
    ```
 
 ## Stack

@@ -12,7 +12,7 @@ The existing application is split into the following top-level areas:
 - [`frontend/`](../frontend/) is the Vite/React web client. It is not the native glasses companion.
 - [`ios/`](../ios/) contains the official Meta CameraAccess handoff for the future native capture bridge.
 
-The demo expects an intake-manifold guide tagged `2019 / chevrolet / silverado` and an AMS VR30 guide tagged `2016 / nissan / vr30`. Those PDFs are local-only inputs and are not currently present in the repository; Qdrant must be seeded before live answers can work. `.env`, local Qdrant data, and parse caches are also local-only artifacts.
+The demo vehicle is a **2022 Subaru WRX**. The demo expects its service manual tagged `2022 / subaru / wrx`. The PDF is local-only inputs and are not currently present in the repository; Qdrant must be seeded before live answers can work. `.env`, local Qdrant data, and parse caches are also local-only artifacts.
 
 ## Target request flow
 
