@@ -1485,7 +1485,10 @@ async def identify_component(
             response = await client.chat.completions.create(
                 model=NEMOTRON_MODEL_NAME,
                 temperature=0,
-                max_tokens=300,
+                # This is a reasoning model: it thinks before answering, and the thinking
+                # counts against max_tokens. At 300 it ran out mid-thought and returned no
+                # JSON at all (content=None). About 600 thinking tokens is typical.
+                max_tokens=2048,
                 messages=[
                     {"role": "system", "content": instructions},
                     {
