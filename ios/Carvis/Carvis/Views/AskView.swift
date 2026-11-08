@@ -16,6 +16,7 @@ struct AskView: View {
     @State private var photo: UIImage?
     @State private var spokenThrough: String?
     @State private var sessionID = UUID().uuidString
+    @State private var listener = VoiceListener()
     @FocusState private var isQuestionFocused: Bool
 
     enum Phase: Equatable {
@@ -55,8 +56,16 @@ struct AskView: View {
         .onAppear { glasses.startPreview() }
         .onDisappear {
             glasses.stopPreview()
+            listener.stop()
             speech.stop()
         }
+        // "Hey Carvis, ..." was heard: put the words in the box and ask.
+        .onChange(of: listener.heard) { _, heard in
+            guard let heard else { return }
+            question = heard.text
+            askByVoice()
+        }
+        .sensoryFeedback(.start, trigger: listener.state == .hearingQuestion) { _, hearing in hearing }
         .sensoryFeedback(.success, trigger: phase) { _, new in
             if case .result(.answer) = new { return true }
             return false
@@ -76,7 +85,13 @@ struct AskView: View {
                     .transition(.opacity)
                     .accessibilityLabel(photo == nil ? "Live view from your glasses" : "Photo from your glasses")
             } else {
-                CameraStatusMessage(status: glasses.status, onConnect: glasses.connect)
+                CameraStatusMessage(status: glasses.status,
+                                    detail: glasses.detail,
+                                    onConnect: glasses.connect,
+                                    onRetry: {
+                                        glasses.stopPreview()
+                                        glasses.startPreview()
+                                    })
                     .padding(24)
             }
         }
@@ -115,6 +130,8 @@ struct AskView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Theme.inkSecondary)
 
+            VoiceToggle(listener: listener)
+
             TextField("What's the torque for this?", text: $question, axis: .vertical)
                 .font(.title3)
                 .lineLimit(1...3)
@@ -142,6 +159,15 @@ struct AskView: View {
             }
             .carvisButton(prominent: true)
             .disabled(!canAsk)
+
+            if let reason = disabledReason {
+                Text(reason)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .contentTransition(.opacity)
+            }
         }
         .padding(20)
         .carvisGlass(.card, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
@@ -153,6 +179,15 @@ struct AskView: View {
         case .asking: "Checking the manual"
         default: "Snap and ask"
         }
+    }
+
+    /// Says why the button is off, so it never looks broken.
+    private var disabledReason: String? {
+        if isWorking { return nil }
+        if client == nil { return "The server address is missing." }
+        if !glasses.isLive { return "Waiting for live video from your glasses." }
+        if trimmedQuestion.isEmpty { return "Type a question first." }
+        return nil
     }
 
     private var canAsk: Bool {
@@ -180,7 +215,7 @@ struct AskView: View {
                 title: "Not in the manual",
                 message: message + (component.map { "\nCarvis thinks it sees: \($0.component) (\(percent($0.confidence)))." } ?? ""),
                 systemImage: "book.closed.fill",
-                tint: Theme.amber,
+                tint: Theme.accent,
                 footnote: spokenThrough
             )
             .transition(.blurReplace)
@@ -209,9 +244,29 @@ struct AskView: View {
     // MARK: - Actions
 
     private func ask() {
-        guard canAsk, let client else { return }
+        guard canAsk else { return }
+        run(byVoice: false)
+    }
+
+    /// Same as tapping Snap and ask, but every outcome is also spoken,
+    /// because you may not be looking at the phone.
+    private func askByVoice() {
+        if canAsk {
+            run(byVoice: true)
+            return
+        }
+        let reason = disabledReason ?? "I'm still working on the last question."
+        Task {
+            await speakAndWait(reason)
+            listener.resume()
+        }
+    }
+
+    private func run(byVoice: Bool) {
+        guard let client else { return }
         isQuestionFocused = false
         speech.stop()
+        listener.pause()  // don't let it hear its own answer
         let asked = trimmedQuestion
         phase = .capturing
         Task {
@@ -220,26 +275,30 @@ struct AskView: View {
                 photo = UIImage(data: jpeg)
                 phase = .asking
                 let result = try await client.ask(photo: jpeg, question: asked, vehicle: vehicle, sessionID: sessionID)
+                phase = .result(result)
                 switch result {
                 case .answer(let text, _, _):
-                    speak(text)
+                    await speakAndWait(text)
                 case .notInManual(let message, _):
-                    speak(message)
+                    await speakAndWait(message)
                 }
-                phase = .result(result)
             } catch {
                 phase = .failed(error.localizedDescription)
+                if byVoice {
+                    await speakAndWait("Sorry, that didn't work. The details are on your phone.")
+                }
             }
+            listener.resume()
         }
     }
 
-    private func speak(_ text: String) {
-        speech.speak(text)
+    private func speakAndWait(_ text: String) async {
         if let name = AudioRoute.bluetoothOutputName {
             spokenThrough = "Spoken through \(name)"
         } else {
             spokenThrough = "Spoken on your phone speaker. Your glasses aren't the audio output right now."
         }
+        await speech.speakAndWait(text)
     }
 }
 
@@ -248,6 +307,82 @@ private func percent(_ value: Double) -> String {
 }
 
 // MARK: - Pieces
+
+/// The "Hey Carvis" switch. When it's on, it shows what Carvis is hearing.
+private struct VoiceToggle: View {
+    let listener: VoiceListener
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button {
+            if listener.isOn {
+                listener.stop()
+            } else {
+                Task { await listener.start() }
+            }
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    if listener.isOn && listener.state != .paused {
+                        LiveDot(size: 10)
+                    } else {
+                        Image(systemName: listener.isOn ? "mic.fill" : "mic.slash.fill")
+                            .font(.headline)
+                    }
+                }
+                .frame(width: 28)
+                .foregroundStyle(listener.isOn ? Theme.accent : Theme.inkSecondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.inkSecondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .contentTransition(.opacity)
+                Spacer(minLength: 8)
+                Text(listener.isOn ? "On" : "Off")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(listener.isOn ? Theme.accent : Theme.inkSecondary)
+            }
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, minHeight: Theme.buttonHeight, alignment: .leading)
+            .background(
+                (listener.isOn ? Theme.accent.opacity(0.14) : Theme.ink.opacity(0.06)),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous))
+        }
+        .buttonStyle(PressableCardStyle())
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: listener.state)
+        .accessibilityValue(listener.isOn ? "On" : "Off")
+    }
+
+    private var title: String {
+        switch listener.state {
+        case .off: "Hey Carvis"
+        case .starting: "Starting the microphone"
+        case .listening: "Say \u{201C}Hey Carvis\u{201D} and your question"
+        case .hearingQuestion: "Listening"
+        case .paused: "Answering"
+        case .unavailable: "Hey Carvis is off"
+        }
+    }
+
+    private var subtitle: String {
+        switch listener.state {
+        case .off: "Ask hands-free through your glasses"
+        case .starting: "One moment"
+        case .listening: listener.microphoneName.map { "Using \($0)" } ?? "Using your phone\u{2019}s mic"
+        case .hearingQuestion: listener.transcript.isEmpty ? "Go ahead" : "\u{201C}\(listener.transcript)\u{201D}"
+        case .paused: "I\u{2019}ll listen again when I\u{2019}m done"
+        case .unavailable(let reason): reason
+        }
+    }
+}
 
 /// "Live" / "Photo" chip in the corner of the camera view.
 private struct CameraBadge: View {
@@ -281,18 +416,20 @@ private struct CameraBadge: View {
 /// Shown inside the camera frame until video arrives.
 private struct CameraStatusMessage: View {
     let status: GlassesController.Status
+    let detail: String
     let onConnect: () -> Void
+    let onRetry: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
-            if status == .startingCamera || status == .connecting {
+            if status == .startingCamera || status == .connecting || status == .needsCameraAccess {
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)
             } else {
                 Image(systemName: "eyeglasses")
                     .font(.system(size: 40, weight: .medium))
-                    .foregroundStyle(Theme.amber)
+                    .foregroundStyle(Theme.accent)
             }
             Text(text)
                 .font(.title3.weight(.semibold))
@@ -307,6 +444,19 @@ private struct CameraStatusMessage: View {
                         .frame(minHeight: Theme.buttonHeight)
                 }
                 .carvisButton(prominent: true)
+            } else if status == .ready || status == .startingCamera || status == .paused {
+                Button(action: onRetry) {
+                    Text("Restart camera")
+                        .font(Theme.buttonFont)
+                        .padding(.horizontal, 28)
+                        .frame(minHeight: Theme.buttonHeight)
+                }
+                .carvisButton()
+            }
+            if status != .notConnected {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.7))
             }
         }
         .accessibilityElement(children: .combine)
@@ -317,7 +467,9 @@ private struct CameraStatusMessage: View {
         case .notConnected: "Connect your glasses to see what they see"
         case .connecting: "Finish in the Meta AI app"
         case .lookingForGlasses: "Put on your glasses and open the arms"
-        case .ready, .startingCamera: "Starting the glasses camera"
+        case .ready: "Glasses found. Tap Restart camera."
+        case .startingCamera: "Starting the glasses camera"
+        case .needsCameraAccess: "Allow camera access in the Meta AI app, then come back"
         case .paused: "Paused. Tap the side of your glasses to resume."
         case .live: ""
         }

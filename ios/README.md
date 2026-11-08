@@ -59,6 +59,18 @@ phone can hold only 3 free-team apps at once.
    (`carvis://` brings you back). Then **Ask about a part**, type a question, and tap
    **Snap and ask**.
 
+## Dashboard and "Hey Carvis"
+
+- **Dashboard:** the car hero, an oil change countdown, odometer, next-due item, maintenance list,
+  and your own specs. Everything is edited on the phone and saved locally (`car-profile.json`).
+  The pre-filled intervals and mileage are demo placeholders; set them from the owner's manual.
+- **Hey Carvis:** a switch on the Ask Carvis screen. Apple speech recognition (on-device when
+  supported) listens through the glasses' Bluetooth HFP mic, set up like CameraAccess's
+  `AudioInputHandler`. "Hey Carvis, <question>" fills the question, takes the photo, asks
+  `/vision-query`, and speaks the answer. Listening pauses while Carvis talks. Meta's toolkit
+  doesn't allow custom wake words on the glasses ("Hey Meta" is system-owned), so this only
+  works with Carvis open. Not yet verified on hardware.
+
 ## Safety rules the app keeps
 
 - No API keys in the app; George holds them.
