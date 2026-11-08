@@ -21,7 +21,15 @@ from typing import Iterable, Sequence
 
 from dotenv import load_dotenv
 from fastembed import TextEmbedding
-from llama_parse import LlamaParse
+from llama_cloud import (
+    FailedMarkdownPage,
+    LlamaParseAgenticOptions,
+    LlamaParseOcrParameters,
+    LlamaParseProcessingOptions,
+    ParserLanguages,
+)
+from llama_cloud.client import AsyncLlamaCloud
+from llama_cloud.resources.v_2 import ParseRequestConfigurationTier
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
@@ -388,9 +396,159 @@ def isolate_torque_spec_chunks(markdown: str) -> list[SpecChunk]:
     return [SpecChunk(text="\n".join(parts).strip(), section=current_section)]
 
 
+# Procedure-step torque specs (e.g. Subaru FSM via LlamaParse v2):
+#   "**1.** Set a new gasket, and install the throttle body ..."
+#   "**Tightening torque:**"
+#   "8 newton-meters (0.8 kgf-m, 5.9 foot-pounds)"
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_STEP_LINE_RE = re.compile(r"^(\d+)\.\s+(.+)$")
+# Page path printed as a plain line, e.g. "FUEL INJECTION (FUEL SYSTEMS)(H4DOTC) > Throttle Body".
+_BREADCRUMB_LINE_RE = re.compile(r"^[A-Z][A-Z0-9 ()/&,.\-]*\)\s*>\s*\S.*$")
+_STEP_TORQUE_VALUE_RE = re.compile(
+    r"^(\d+(?:\.\d+)?\s*(?:newton-meters|N\s*·\s*m)\s*\([^)]*\))"
+)
+# A single "T:" callout means every fastener marked T in that figure shares one value.
+# Numbered callouts (T1:, T2:) are deliberately NOT matched: which bolt is T1 vs T2
+# is only shown in the diagram, so storing them as text could mislead.
+_SINGLE_T_VALUE_RE = re.compile(r"^T:\s*(\d+(?:\.\d+)?)\s*\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)")
+
+
+_TRIPLE_UNIT_RE = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*newton-meters\s*\(\s*(\d+(?:\.\d+)?)\s*kgf-m\s*,\s*(\d+(?:\.\d+)?)\s*foot-pounds\s*\)"
+)
+
+
+def _units_agree(value: str) -> bool:
+    """OCR guard: a spec printed as N·m (kgf-m, ft-lb) must be self-consistent.
+
+    1 N·m = 0.10197 kgf-m = 0.73756 ft-lb. The manual rounds to one decimal, so
+    allow a small tolerance. A mismatch means a digit was probably misread.
+    Values not in the three-unit form are accepted unchanged.
+    """
+    match = _TRIPLE_UNIT_RE.match(value)
+    if match is None:
+        return True
+    nm, kgf, ftlb = (float(group) for group in match.groups())
+    kgf_ok = abs(nm * 0.10197 - kgf) <= max(0.15, 0.06 * kgf)
+    ftlb_ok = abs(nm * 0.73756 - ftlb) <= max(0.15, 0.03 * ftlb)
+    return kgf_ok and ftlb_ok
+
+
+def _plain(line: str) -> str:
+    """Drop HTML tags and Markdown bold/underline markers from one line."""
+    return _HTML_TAG_RE.sub("", line).replace("**", "").replace("__", "").strip()
+
+
+def isolate_procedure_torque_chunks(markdown: str) -> list[SpecChunk]:
+    """One atomic chunk per unambiguous procedure-step torque spec.
+
+    Tracks the page breadcrumb ("FUEL INJECTION ... > Throttle Body"), the
+    procedure heading ("INSTALLATION"), and the latest numbered step, then emits
+    a one-row Application | Torque | Notes table whenever a "Tightening torque"
+    label is followed by a single explicit value. Values inside HTML tables and
+    numbered diagram callouts (T1, T2, ...) are skipped because their meaning
+    depends on the figure.
+    """
+    chunks: list[SpecChunk] = []
+    lines = markdown.splitlines()
+    breadcrumb = ""
+    procedure = ""
+    step_text = ""
+    in_table = False
+
+    for index, raw_line in enumerate(lines):
+        if "<table" in raw_line:
+            in_table = True
+        if in_table:
+            if "</table" in raw_line:
+                in_table = False
+            continue
+
+        line = _plain(raw_line)
+        if not line:
+            continue
+
+        heading = _extract_heading_text(raw_line)
+        if heading is not None:
+            heading = _plain(heading)
+            if " > " in heading:
+                breadcrumb = heading
+                procedure = ""
+                step_text = ""
+            else:
+                procedure = heading
+                step_text = ""
+            continue
+
+        if _BREADCRUMB_LINE_RE.match(line):
+            breadcrumb = line
+            procedure = ""
+            step_text = ""
+            continue
+
+        step = _STEP_LINE_RE.match(line)
+        if step is not None:
+            step_text = step.group(2).strip()
+            continue
+
+        if "tightening torque" not in line.lower():
+            continue
+
+        # The value is usually on the next non-empty line; occasionally on the same line.
+        candidates = [line.split(":", 1)[1].strip()] if ":" in line else []
+        candidates += [
+            _plain(nxt) for nxt in lines[index + 1 : index + 4] if _plain(nxt)
+        ][:1]
+
+        value = ""
+        note = step_text
+        for candidate in candidates:
+            direct = _STEP_TORQUE_VALUE_RE.match(candidate)
+            if direct is not None:
+                value = direct.group(1)
+                break
+            single = _SINGLE_T_VALUE_RE.match(candidate)
+            if single is not None:
+                nm, kgf, ftlb = single.groups()
+                value = f"{nm} newton-meters ({kgf} kgf-m, {ftlb} foot-pounds)"
+                note = "Applies to every fastener marked T in the figure."
+                break
+        if not value or not breadcrumb:
+            continue
+        if not _units_agree(value):
+            print(f"WARNING: skipped torque spec with inconsistent units (possible OCR error): {value!r} in {breadcrumb!r}")
+            continue
+
+        component = breadcrumb.split(" > ")[-1].strip()
+        application = f"{component} ({procedure.title()})" if procedure else component
+        # George speaks only "Application: Torque", so the step goes into Application
+        # too; otherwise several values for one component would sound identical.
+        if note == step_text and step_text:
+            detail = re.split(r"\s*Ref\. to", step_text)[0].strip().rstrip(".")
+            if detail:
+                application = f"{application}, {detail[:140]}"
+        application = application.replace("|", "/")
+        notes = note.replace("|", "/")
+        chunks.append(
+            SpecChunk(
+                text=(
+                    "| Application | Torque | Notes |\n"
+                    "| --- | --- | --- |\n"
+                    f"| {application} | {value} | {notes} |"
+                ),
+                section=breadcrumb,
+            )
+        )
+
+    return chunks
+
+
 def collect_spec_chunks(markdown: str) -> list[SpecChunk]:
-    """Prefer atomic Markdown tables; fall back to synthesized torque specs."""
-    chunks = isolate_markdown_tables(markdown)
+    """Atomic Markdown tables plus procedure-step torque specs.
+
+    Falls back to synthesized torque specs when neither is present.
+    """
+    chunks = isolate_markdown_tables(markdown) + isolate_procedure_torque_chunks(markdown)
     if chunks:
         return chunks
     return isolate_torque_spec_chunks(markdown)
@@ -422,13 +580,16 @@ async def parse_pdf_to_markdown(
     force_parse: bool = False,
     premium_mode: bool = False,
 ) -> str:
-    """Async LlamaParse extraction to a single Markdown document string.
+    """Async LlamaParse (v2 API) extraction to a single Markdown document string.
 
     Absolute credit protection:
     1. When force_parse is False and a local cache file exists, read it from disk
        and return immediately — zero LlamaParse HTTP calls.
-    2. Remote calls use tier=cost_effective (never agentic), use_vendor_cache for
-       LlamaCloud's 48-hour dedupe window, and premium_mode=False unless --premium.
+    2. Remote calls use tier=cost_effective unless premium_mode (--premium) is set,
+       which selects tier=agentic with the OCR/torque-table custom prompt.
+
+    Flow: upload the PDF (files API) → start a v2 parse job → poll until it
+    finishes → fetch per-page Markdown and join it in page order.
     """
     if not path.is_file():
         raise SystemExit(f"PDF not found: {path}")
@@ -451,38 +612,73 @@ async def parse_pdf_to_markdown(
             )
             return cached_markdown
 
-    # Enforce defaults: cost_effective tier only; premium only via --premium.
+    # Enforce defaults: cost_effective tier only; agentic only via --premium.
     allow_premium = bool(premium_mode)
+    tier = (
+        ParseRequestConfigurationTier.AGENTIC
+        if allow_premium
+        else ParseRequestConfigurationTier.COST_EFFECTIVE
+    )
 
-    parser = LlamaParse(
-        api_key=api_key,
-        result_type="markdown",
-        verbose=True,
-        language="en",
-        tier="cost_effective",
-        use_vendor_cache=True,
-        invalidate_cache=False,
-        do_not_cache=False,
-        aggressive_table_extraction=True,
-        outlined_table_extraction=True,
-        premium_mode=allow_premium,
-        system_prompt=_LLAMAPARSE_SYSTEM_PROMPT,
-    )
+    # The client's default 60 s HTTP timeout is too short to upload large manuals.
+    client = AsyncLlamaCloud(token=api_key, timeout=600)
+    print(f"Uploading to LlamaParse: {path.name}")
+    with path.open("rb") as handle:
+        uploaded = await client.files.upload_file(upload_file=handle)
+
     print(
-        "Calling LlamaParse "
-        f"(tier=cost_effective, use_vendor_cache=True, "
-        f"premium_mode={allow_premium}, force_parse={force_parse})..."
+        f"Calling LlamaParse v2 (tier={tier.value}, premium={allow_premium}, "
+        f"force_parse={force_parse})..."
     )
-    documents = await parser.aload_data(str(path))
-    if not documents:
-        raise SystemExit(f"LlamaParse returned no documents for {path}")
+    parse_options: dict = {
+        "processing_options": LlamaParseProcessingOptions(
+            aggressive_table_extraction=True,
+            ocr_parameters=LlamaParseOcrParameters(languages=[ParserLanguages.EN]),
+        ),
+    }
+    if allow_premium:
+        # The custom prompt is an agentic-tier option in the v2 API.
+        parse_options["agentic_options"] = LlamaParseAgenticOptions(
+            custom_prompt=_LLAMAPARSE_SYSTEM_PROMPT
+        )
+    job = await client.v_2.parse_file(
+        file_id=uploaded.id,
+        tier=tier,
+        version="latest",
+        **parse_options,
+    )
+
+    # Poll until the job finishes (large manuals can take several minutes).
+    poll_seconds, waited, max_wait = 5, 0, 60 * 60
+    status = job.status.value
+    while status in {"PENDING", "RUNNING"}:
+        if waited >= max_wait:
+            raise SystemExit(f"LlamaParse job {job.id} still {status} after {max_wait} s")
+        await asyncio.sleep(poll_seconds)
+        waited += poll_seconds
+        status = (await client.v_2.get_parse_job(job.id)).job.status.value
+        if waited % 60 == 0:
+            print(f"  ...LlamaParse job {status.lower()} ({waited // 60} min)")
+
+    if status != "COMPLETED":
+        raise SystemExit(f"LlamaParse job {job.id} ended with status {status}")
+
+    result = await client.v_2.get_parse_job(job.id, expand="markdown")
+    if result.markdown is None or not result.markdown.pages:
+        raise SystemExit(f"LlamaParse returned no Markdown for {path}")
 
     pages: list[str] = []
-    for document in documents:
-        content = (document.get_content() or "").strip()
+    failed_pages: list[int] = []
+    for page in sorted(result.markdown.pages, key=lambda p: p.page_number):
+        if isinstance(page, FailedMarkdownPage):
+            failed_pages.append(page.page_number)
+            continue
+        content = (page.markdown or "").strip()
         if content:
             pages.append(content)
 
+    if failed_pages:
+        print(f"WARNING: LlamaParse failed on {len(failed_pages)} page(s): {failed_pages}")
     if not pages:
         raise SystemExit(f"LlamaParse returned empty Markdown for {path}")
 
