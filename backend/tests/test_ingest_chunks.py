@@ -53,6 +53,30 @@ def test_numbered_diagram_callouts_are_skipped_but_single_t_is_kept() -> None:
     assert "every fastener marked T" in texts
 
 
+_SUBSTEP_PAGE = """BRAKE > Rear Disc Brake Assembly
+
+# REMOVAL
+
+**5.** Remove the caliper body.
+
+(1) Disconnect the brake hose rear.
+
+(2) Install the fluid leakage protection plug to the caliper body.
+**Tightening torque:**
+20 N·m (2.0 kgf-m, 14.8 ft-lb)
+"""
+
+
+def test_value_attaches_to_latest_substep_and_plain_breadcrumb() -> None:
+    chunks = _chunks(_SUBSTEP_PAGE)
+    assert len(chunks) == 1
+    text = chunks[0].text
+    # The section comes from a breadcrumb line with no ")" before ">".
+    assert chunks[0].section == "BRAKE > Rear Disc Brake Assembly"
+    assert "Rear Disc Brake Assembly (Removal), Install the fluid leakage protection plug" in text
+    assert "Remove the caliper body" not in text
+
+
 def test_inconsistent_units_are_rejected_as_possible_ocr_errors() -> None:
     assert _units_agree("8 newton-meters (0.8 kgf-m, 5.9 foot-pounds)")
     assert _units_agree("25 newton-meters (2.5 kgf-m, 18.4 foot-pounds)")

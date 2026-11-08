@@ -786,6 +786,112 @@ def _query_vector_for(
     return list(vectors[0])
 
 
+# --- Lexical safety gate ----------------------------------------------------
+# Every stored chunk is a small torque table, so embedding scores alone cannot
+# tell "wheel nut" from "camber flange nut" (or a Ford question from a Subaru
+# chunk). A hit must therefore also contain the question's part words, and a
+# question naming a make with no uploaded manual is refused outright.
+_SEARCH_CANDIDATES = 12
+_KNOWN_MAKES: tuple[str, ...] = (
+    "acura", "alfa romeo", "audi", "bmw", "buick", "cadillac", "chevrolet", "chevy",
+    "chrysler", "dodge", "ferrari", "fiat", "ford", "genesis", "gmc", "honda",
+    "hyundai", "infiniti", "jaguar", "jeep", "kia", "lamborghini", "land rover",
+    "lexus", "lincoln", "mazda", "mercedes", "mitsubishi", "nissan", "porsche",
+    "subaru", "tesla", "toyota", "volkswagen", "vw", "volvo",
+)
+_MAKE_ALIASES = {"chevy": "chevrolet", "vw": "volkswagen", "subie": "subaru"}
+_QUESTION_FILLER = frozenset(
+    """
+    a about again an and any are at be can car do does for from get give hey how i
+    in is it its know me much my need number of on one please s setting should spec
+    specification specs tell that the there these this those to torque torques
+    tighten tightening tightened use value vehicle want was what whats when where
+    which with you your george newton meter foot pound ft lb lbs nm kgf
+    """.split()
+)
+_FASTENER_WORDS = frozenset({"bolt", "nut", "screw", "stud", "fastener", "fitting"})
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _stem(word: str) -> str:
+    """Tiny plural fold so "nuts" matches "nut" and "bolts" matches "bolt"."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _words(text: str) -> list[str]:
+    return [_stem(w) for w in _WORD_RE.findall((text or "").lower())]
+
+
+def _vehicle_words(catalog: ShopVehicleCatalog) -> set[str]:
+    words: set[str] = set()
+    for value in (*catalog.makes, *catalog.models, *catalog.years, *_KNOWN_MAKES):
+        words.update(_words(value))
+    words.update(_MAKE_ALIASES)
+    return words
+
+
+def _part_words(text: str, catalog: ShopVehicleCatalog) -> list[str]:
+    """Words naming the part, in order (filler, numbers and vehicle names removed)."""
+    skip = _QUESTION_FILLER | _vehicle_words(catalog)
+    return [w for w in _words(text) if len(w) >= 3 and not w.isdigit() and w not in skip]
+
+
+def mentioned_unloaded_make(text: str, catalog: ShopVehicleCatalog) -> str | None:
+    """Return a make named in ``text`` that has no uploaded manual, if any."""
+    lowered = f" {' '.join(_WORD_RE.findall((text or '').lower()))} "
+    for make in _KNOWN_MAKES:
+        if f" {make} " in lowered:
+            canonical = _MAKE_ALIASES.get(make, make)
+            if canonical not in catalog.makes:
+                return canonical
+    return None
+
+
+def _lexical_rank(chunk_text: str, ordered_words: Sequence[str]) -> int | None:
+    """None if the chunk lacks a required part word; else a tie-break bonus."""
+    chunk_words = _words(chunk_text)
+    chunk_set = set(chunk_words)
+    required = {w for w in ordered_words if w not in _FASTENER_WORDS}
+    if not required or not required <= chunk_set:
+        return None
+    bonus = sum(1 for w in ordered_words if w in _FASTENER_WORDS and w in chunk_set)
+    chunk_pairs = set(zip(chunk_words, chunk_words[1:]))
+    bonus += 2 * sum(1 for pair in zip(ordered_words, ordered_words[1:]) if pair in chunk_pairs)
+    return bonus
+
+
+def _pick_hit(
+    hits: Sequence[Any],
+    ordered_words: Sequence[str],
+    *,
+    min_score: float | None,
+    year: str,
+    make: str,
+    model: str,
+    pass_name: str,
+) -> str | None:
+    """Best accepted hit that contains the question's part words."""
+    best: tuple[int, float, str] | None = None
+    for hit in hits:
+        text = _accept_hit(
+            hit, min_score=min_score, year=year, make=make, model=model, pass_name=pass_name
+        )
+        if not text:
+            continue
+        rank = _lexical_rank(text, ordered_words)
+        if rank is None:
+            continue
+        candidate = (rank, _hit_score(hit) or 0.0, text)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    if best is None:
+        logger.info("reject %s: no candidate contains part words %r", pass_name, list(ordered_words))
+        return None
+    return best[2]
+
+
 def _search_points(
     client: QdrantClient,
     query_vector: list[float],
@@ -820,12 +926,20 @@ def _search_top_chunk_sync(
     make: str,
     model: str,
     shop_id: str = DEFAULT_SHOP_ID,
+    lexical_text: str | None = None,
+    lexical_fallback: str | None = None,
 ) -> str | None:
     """Hybrid retrieval: exact metadata first, then soft match, then semantic.
 
     ``shop_id`` is a mandatory must-filter on every pass so tenants cannot
     retrieve each other's manuals. Pass 3 (and soft Pass 2) refuse low-score
-    nearest neighbors so unknown vehicles do not inherit AMS/Chevy leftovers.
+    nearest neighbors so unknown vehicles do not inherit other vehicles' leftovers.
+
+    Lexical safety gate: ``lexical_text`` (the user's own words; defaults to
+    ``query``) must name a part, every non-fastener part word must appear in the
+    chosen chunk, and a make with no uploaded manual is refused. When the user's
+    words name no part (e.g. "torque for this?"), ``lexical_fallback`` (e.g. the
+    vision model's component) supplies the part words instead.
     Sync — call via ``search_top_chunk`` so FastAPI never blocks the event loop.
     """
     tenant = (shop_id or DEFAULT_SHOP_ID).strip().lower() or DEFAULT_SHOP_ID
@@ -835,6 +949,19 @@ def _search_top_chunk_sync(
     # Empty shop brain (post-purge / no uploads) → hard miss, no semantic gambling.
     if catalog.is_empty:
         logger.info("refuse search: empty shop catalog shop_id=%r", tenant)
+        return None
+
+    user_words = lexical_text if lexical_text is not None else query
+    unloaded_make = mentioned_unloaded_make(user_words, catalog)
+    if unloaded_make:
+        logger.info("refuse search: question names %r, which has no uploaded manual", unloaded_make)
+        return None
+
+    ordered_words = _part_words(user_words, catalog)
+    if not [w for w in ordered_words if w not in _FASTENER_WORDS] and lexical_fallback:
+        ordered_words = _part_words(lexical_fallback, catalog)
+    if not [w for w in ordered_words if w not in _FASTENER_WORDS]:
+        logger.info("refuse search: question names no part %r", user_words)
         return None
 
     # Explicit vehicle fields must exist in this shop's uploaded brain.
@@ -874,19 +1001,19 @@ def _search_top_chunk_sync(
                 ),
             ]
         )
-        hits = _search_points(client, query_vector, strict_filter, limit=1)
-        if hits:
-            # Strict metadata already scoped the vehicle; score floor is not required.
-            text = _accept_hit(
-                hits[0],
-                min_score=None,
-                year=year,
-                make=make,
-                model=model,
-                pass_name="strict",
-            )
-            if text:
-                return text
+        hits = _search_points(client, query_vector, strict_filter, limit=_SEARCH_CANDIDATES)
+        # Strict metadata already scoped the vehicle; score floor is not required.
+        text = _pick_hit(
+            hits,
+            ordered_words,
+            min_score=None,
+            year=year,
+            make=make,
+            model=model,
+            pass_name="strict",
+        )
+        if text:
+            return text
 
     # Pass 2 — soft OR on vehicle fields, still locked to shop_id.
     soft_should: list[qmodels.FieldCondition] = []
@@ -919,26 +1046,27 @@ def _search_top_chunk_sync(
                 min_count=1,
             ),
         )
-        hits = _search_points(client, query_vector, soft_filter, limit=1)
-        if hits:
-            text = _accept_hit(
-                hits[0],
-                min_score=MIN_FILTERED_SCORE,
-                year=year,
-                make=make,
-                model=model,
-                pass_name="soft",
-            )
-            if text:
-                return text
+        hits = _search_points(client, query_vector, soft_filter, limit=_SEARCH_CANDIDATES)
+        text = _pick_hit(
+            hits,
+            ordered_words,
+            min_score=MIN_FILTERED_SCORE,
+            year=year,
+            make=make,
+            model=model,
+            pass_name="soft",
+        )
+        if text:
+            return text
 
     # Pass 3 — semantic fallback still restricted to this shop's corpus.
     tenant_filter = qmodels.Filter(must=shop_must)
-    hits = _search_points(client, query_vector, query_filter=tenant_filter, limit=1)
-    if not hits:
-        return None
-    return _accept_hit(
-        hits[0],
+    hits = _search_points(
+        client, query_vector, query_filter=tenant_filter, limit=_SEARCH_CANDIDATES
+    )
+    return _pick_hit(
+        hits,
+        ordered_words,
         min_score=MIN_SEMANTIC_SCORE,
         year=year,
         make=make,
@@ -955,6 +1083,8 @@ async def search_top_chunk(
     make: str,
     model: str,
     shop_id: str = DEFAULT_SHOP_ID,
+    lexical_text: str | None = None,
+    lexical_fallback: str | None = None,
 ) -> str | None:
     """Run hybrid retrieval off the event loop (embed + Qdrant are sync)."""
     return await asyncio.to_thread(
@@ -966,6 +1096,8 @@ async def search_top_chunk(
         make,
         model,
         shop_id,
+        lexical_text,
+        lexical_fallback,
     )
 
 
@@ -1455,6 +1587,9 @@ async def vision_query(
         make=make,
         model=model,
         shop_id=shop_id,
+        # Gate on the user's own words; the detected component fills in for "this".
+        lexical_text=query_normalizer(question),
+        lexical_fallback=visual["component"],
     )
     if chunk_text is None:
         return JSONResponse(

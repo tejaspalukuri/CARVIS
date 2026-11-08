@@ -401,9 +401,11 @@ def isolate_torque_spec_chunks(markdown: str) -> list[SpecChunk]:
 #   "**Tightening torque:**"
 #   "8 newton-meters (0.8 kgf-m, 5.9 foot-pounds)"
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-_STEP_LINE_RE = re.compile(r"^(\d+)\.\s+(.+)$")
-# Page path printed as a plain line, e.g. "FUEL INJECTION (FUEL SYSTEMS)(H4DOTC) > Throttle Body".
-_BREADCRUMB_LINE_RE = re.compile(r"^[A-Z][A-Z0-9 ()/&,.\-]*\)\s*>\s*\S.*$")
+# Numbered steps "1. Do X" and sub-steps "(2) Do Y"; the value belongs to the latest one.
+_STEP_LINE_RE = re.compile(r"^(?:\d+\.|\(\d+\))\s+(.+)$")
+# Page path printed as a plain line, e.g. "FUEL INJECTION (FUEL SYSTEMS)(H4DOTC) > Throttle Body"
+# or "WHEEL AND TIRE SYSTEM > Tire and Wheel" (upper-case system, then " > ").
+_BREADCRUMB_LINE_RE = re.compile(r"^[A-Z][A-Z0-9 ()/&,.\-]*[A-Z)]\s+>\s+\S.*$")
 _STEP_TORQUE_VALUE_RE = re.compile(
     r"^(\d+(?:\.\d+)?\s*(?:newton-meters|N\s*·\s*m)\s*\([^)]*\))"
 )
@@ -488,7 +490,7 @@ def isolate_procedure_torque_chunks(markdown: str) -> list[SpecChunk]:
 
         step = _STEP_LINE_RE.match(line)
         if step is not None:
-            step_text = step.group(2).strip()
+            step_text = step.group(1).strip()
             continue
 
         if "tightening torque" not in line.lower():
@@ -520,6 +522,10 @@ def isolate_procedure_torque_chunks(markdown: str) -> list[SpecChunk]:
             continue
 
         component = breadcrumb.split(" > ")[-1].strip()
+        if component.lower() == "general description":
+            # "WHEEL AND TIRE SYSTEM > General Description" → "Wheel And Tire System"
+            system = re.sub(r"\([^)]*\)", "", breadcrumb.split(" > ")[0]).strip()
+            component = system.title() or component
         application = f"{component} ({procedure.title()})" if procedure else component
         # George speaks only "Application: Torque", so the step goes into Application
         # too; otherwise several values for one component would sound identical.
